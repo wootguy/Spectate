@@ -7,6 +7,14 @@ void PluginInit()
 	g_Module.ScriptInfo.SetContactInfo( "https://github.com/wootguy/" );
 	
 	g_Hooks.RegisterHook( Hooks::Player::ClientSay, @ClientSay );
+	
+	lastCommandTime.resize(0);
+	lastCommandTime.resize(33);
+}
+
+void MapInit() {
+	lastCommandTime.resize(0);
+	lastCommandTime.resize(33);
 }
 
 void delay_respawn(EHandle h_plr) {
@@ -19,12 +27,23 @@ void delay_respawn(EHandle h_plr) {
 	plr.m_flRespawnDelayTime = 10000 - g_EngineFuncs.CVarGetFloat("mp_respawndelay");
 }
 
+array<float> lastCommandTime;
+
 bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 	bool isAdmin = g_PlayerFuncs.AdminLevel(plr) >= ADMIN_YES;
 	
 	if (args.ArgC() >= 1)
-	{		
+	{
 		if (args[0] == ".observer") {
+			float cooldown_time = g_EngineFuncs.CVarGetFloat("mp_respawndelay");
+			float delta = g_Engine.time - lastCommandTime[plr.entindex()];
+			if (delta < cooldown_time) {
+				g_PlayerFuncs.SayText(plr, "Wait " + int((cooldown_time - delta) + 0.99f) + " seconds before toggling observer mode again.\n");
+				return true;
+			}
+			
+			lastCommandTime[plr.entindex()] = g_Engine.time;
+			
 			if (plr.GetObserver() !is null && plr.GetObserver().IsObserver()) {
 				if (g_SurvivalMode.IsActive()) {
 					g_PlayerFuncs.SayText(plr, "Can't respawn while survival mode is on.\n");
@@ -32,7 +51,7 @@ bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 					if (plr.m_flRespawnDelayTime != 0) {
 						g_PlayerFuncs.ClientPrintAll(HUD_PRINTNOTIFY, "" + plr.pev.netname + " stopped observing.\n");
 					}
-					plr.m_flRespawnDelayTime = 0;
+					g_PlayerFuncs.RespawnPlayer(plr, true, true);
 				}
 			} else {
 				plr.Killed(plr.pev, GIB_ALWAYS);
