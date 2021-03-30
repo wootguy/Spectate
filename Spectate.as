@@ -54,8 +54,17 @@ bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 					g_PlayerFuncs.RespawnPlayer(plr, true, true);
 				}
 			} else {
-				plr.Killed(plr.pev, GIB_ALWAYS);
+				bool wasAlive = plr.IsAlive();
+			
+				if (wasAlive) {
+					plr.Killed(plr.pev, GIB_ALWAYS);
+				}
+				
 				plr.GetObserver().StartObserver(plr.pev.origin, plr.pev.v_angle, true);
+				
+				if (!wasAlive && plr.GetObserver().HasCorpse()) {
+					plr.GetObserver().RemoveDeadBody();
+				}
 				
 				if (!g_SurvivalMode.IsActive()) {
 					g_Scheduler.SetTimeout("delay_respawn", 0.1f, EHandle(plr));
