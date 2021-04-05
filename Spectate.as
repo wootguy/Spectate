@@ -34,7 +34,7 @@ bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 	
 	if (args.ArgC() >= 1)
 	{
-		if (args[0] == ".observer") {
+		if (args[0] == ".observer" || args[0] == ".observe" || args[0] == ".spectate") {
 			float cooldown_time = g_EngineFuncs.CVarGetFloat("mp_respawndelay");
 			float delta = g_Engine.time - lastCommandTime[plr.entindex()];
 			if (delta < cooldown_time) {
@@ -91,6 +91,8 @@ HookReturnCode ClientSay( SayParameters@ pParams ) {
 }
 
 CClientCommand _g("observer", "Spectate commands", @consoleCmd );
+CClientCommand _g2("observe", "Spectate commands", @consoleCmd );
+CClientCommand _g3("spectate", "Spectate commands", @consoleCmd );
 
 void consoleCmd( const CCommand@ args ) {
 	CBasePlayer@ plr = g_ConCommandSystem.GetCurrentPlayer();
