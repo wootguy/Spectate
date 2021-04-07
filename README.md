@@ -8,7 +8,7 @@ Toggle observer mode with any of these commands (chat or console):
 
 # Installation
 1. Download the script and save it to `scripts/plugins/Spectate.as`
-1. Add this to the top of default_plugins.txt
+1. Add this to default_plugins.txt
 ```
     "plugin"
     {
