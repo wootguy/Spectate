@@ -24,7 +24,7 @@ void delay_respawn(EHandle h_plr) {
 	}
 	
 	// the player respawn hooks don't work, so this has to be done to prevent respawning.
-	plr.m_flRespawnDelayTime = 10000 - g_EngineFuncs.CVarGetFloat("mp_respawndelay");
+	plr.m_flRespawnDelayTime = 100000 - g_EngineFuncs.CVarGetFloat("mp_respawndelay");
 }
 
 array<float> lastCommandTime;
@@ -35,7 +35,7 @@ bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 	if (args.ArgC() >= 1)
 	{
 		if (args[0] == ".observer" || args[0] == ".observe" || args[0] == ".spectate") {
-			float cooldown_time = g_EngineFuncs.CVarGetFloat("mp_respawndelay");
+			float cooldown_time = Math.max(g_EngineFuncs.CVarGetFloat("mp_respawndelay"), 1.0f);
 			float delta = g_Engine.time - lastCommandTime[plr.entindex()];
 			if (delta < cooldown_time) {
 				g_PlayerFuncs.SayText(plr, "Wait " + int((cooldown_time - delta) + 0.99f) + " seconds before toggling observer mode again.\n");
