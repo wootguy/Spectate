@@ -64,8 +64,9 @@ class Prisoner {
 	
 	void addMute(CBasePlayer@ plr) {
 		string muterId = g_EngineFuncs.GetPlayerAuthId(plr.edict()).ToLowercase();
+		CBasePlayer@ skipMute = getPlayerByName(null, steamid);
 		
-		if (!mutes.exists(muterId)) {
+		if (!mutes.exists(muterId) && skipMute.entindex() != plr.entindex()) {
 			mutes[muterId] = true;
 			g_EngineFuncs.ServerCommand("as_command .mute_ext \"" + muterId + '" "' + steamid + '" ' + " 1\n");
 			g_EngineFuncs.ServerExecute();
@@ -1164,6 +1165,9 @@ HookReturnCode ClientSay( SayParameters@ pParams ) {
 	if (args.ArgC() > 0 && doCommand(plr, args, false))
 	{
 		pParams.ShouldHide = true;
+		return HOOK_HANDLED;
+	} else if (isPrisoner(plr)) {
+		// don't let chats show up in the relay
 		return HOOK_HANDLED;
 	}
 	return HOOK_CONTINUE;
