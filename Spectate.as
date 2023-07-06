@@ -1,6 +1,8 @@
 // check classify during view
 // seeing 0 views icon with nobody viewing
 
+#include "inc/RelaySay"
+
 void print(string text) { g_Game.AlertMessage( at_console, text); }
 void println(string text) { print(text + "\n"); }
 
@@ -10,10 +12,82 @@ array<ViewDat> g_viewents;
 string screenlook_spr = "screenlook.spr";
 string eye_spr = "sprites/screenlook2.spr";
 
+CCVar@ g_MaxJailTimeHours;
+
 // Menus need to be defined globally when the plugin is loaded or else paging doesn't work.
 // Each player needs their own menu or else paging breaks when someone else opens the menu.
 // These also need to be modified directly (not via a local var reference).
 array<CTextMenu@> g_menus(g_Engine.maxClients+1, null);
+
+// active steam id jails
+class Prisoner {
+	string steamid;
+	string lastKnownName;
+	DateTime releaseDate;
+	EHandle h_plr;
+	
+	// players who have muted this prisoner (prevents repeat mutes if someone wasts to talk to the prisoner)
+	dictionary mutes;
+	
+	Prisoner() {}
+	
+	Prisoner(string steamid, DateTime releaseDate, string lastKnownName) {
+		this.steamid = steamid;
+		this.releaseDate = releaseDate;
+		this.lastKnownName = lastKnownName;
+		h_plr = getPlayerByName(null, steamid);
+		init();
+	}
+	
+	void init() {
+		CBasePlayer@ skipMute = getPlayerByName(null, steamid);
+	
+		for (int i = 1; i <= g_Engine.maxClients; i++) {
+			CBasePlayer@ plr = g_PlayerFuncs.FindPlayerByIndex(i);
+			
+			if (plr is null or !plr.IsConnected() or (skipMute !is null and skipMute.entindex() == plr.entindex())) {
+				continue;
+			}
+			
+			string muterId = g_EngineFuncs.GetPlayerAuthId(plr.edict()).ToLowercase();
+			mutes[muterId] = true;
+			
+			// tell metamod to mute this player
+			g_EngineFuncs.ServerCommand("as_command .mute_ext \"" + muterId + '" "' + steamid + '" ' + " 1\n");
+		}
+		
+		// tell metamod to suppress this player's console commands
+		g_EngineFuncs.ServerCommand("metajail \"" + steamid + '" 1\n');
+		
+		g_EngineFuncs.ServerExecute();
+	}
+	
+	void addMute(CBasePlayer@ plr) {
+		string muterId = g_EngineFuncs.GetPlayerAuthId(plr.edict()).ToLowercase();
+		
+		if (!mutes.exists(muterId)) {
+			mutes[muterId] = true;
+			g_EngineFuncs.ServerCommand("as_command .mute_ext \"" + muterId + '" "' + steamid + '" ' + " 1\n");
+			g_EngineFuncs.ServerExecute();
+		}
+	}
+	
+	void release() {
+		array<string>@ mute_keys = mutes.getKeys();
+		
+		for (uint i = 0; i < mute_keys.length(); i++) {			
+			g_EngineFuncs.ServerCommand("as_command .mute_ext \"" + mute_keys[i] + '" "' + steamid + '" ' + " 0\n");
+		}
+		g_EngineFuncs.ServerCommand("metajail \"" + steamid + '" 0\n');
+		g_EngineFuncs.ServerExecute();
+		
+		CBasePlayer@ reviveTarget = getPlayerByName(null, steamid);
+		if (!g_SurvivalMode.IsActive()) {
+			reviveTarget.Revive();
+		}
+	}
+}
+array<Prisoner> g_prisoners;
 
 void PluginInit()
 {	
@@ -21,12 +95,16 @@ void PluginInit()
 	g_Module.ScriptInfo.SetContactInfo( "https://github.com/wootguy/" );
 	
 	g_Hooks.RegisterHook( Hooks::Player::ClientSay, @ClientSay );
+	g_Hooks.RegisterHook( Hooks::Player::ClientPutInServer, @ClientJoin );
 	g_Hooks.RegisterHook(Hooks::Player::ClientDisconnect, @ClientDisconnect);
 	
 	g_viewents.resize(33);
 	g_playerdat.resize(33);
 	
 	g_Scheduler.SetInterval("view_counter_loop", 0.2f, -1);
+	g_Scheduler.SetInterval("jail_think", 1.0f, -1);
+	
+	@g_MaxJailTimeHours = CCVar("maxJailTimeHours", 24*7, "Max jail time in hours", ConCommandFlag::AdminOnly);
 }
 
 void PluginExit()
@@ -57,7 +135,17 @@ void MapInit() {
 	g_Game.PrecacheModel(eye_spr);
 }
 
+HookReturnCode ClientJoin(CBasePlayer@ plr)
+{
+	for (uint i = 0; i < g_prisoners.size(); i++) {	
+		g_prisoners[i].addMute(plr);
+	}
+	g_Scheduler.SetTimeout("update_prisoner_handles", 1.0f);
+	return HOOK_CONTINUE;
+}
+
 HookReturnCode ClientDisconnect(CBasePlayer@ pPlayer) {
+	g_Scheduler.SetTimeout("update_prisoner_handles", 1.0f);
 	g_playerdat[pPlayer.entindex()].lastViewTarget = "";
     return HOOK_CONTINUE;
 }
@@ -230,14 +318,61 @@ class ViewDat {
 	}
 }
 
-void delay_respawn(EHandle h_plr) {
+void delay_respawn(EHandle h_plr, float customTime) {
 	CBasePlayer@ plr = cast<CBasePlayer@>(h_plr.GetEntity());
 	if (plr is null) {
 		return;
 	}
 	
 	// the player respawn hooks don't work, so this has to be done to prevent respawning.
-	plr.m_flRespawnDelayTime = 100000 - g_EngineFuncs.CVarGetFloat("mp_respawndelay");
+	if (customTime == 0)
+		plr.m_flRespawnDelayTime = 100000 - g_EngineFuncs.CVarGetFloat("mp_respawndelay");
+	else {
+		plr.m_flRespawnDelayTime = customTime;
+	}
+}
+
+void update_prisoner_handles() {
+	for (uint i = 0; i < g_prisoners.size(); i++) {	
+		g_prisoners[i].h_plr = getPlayerByName(null, g_prisoners[i].steamid);
+	}
+}
+
+void jail_think() {
+	DateTime now = DateTime();
+	
+	for (uint i = 0; i < g_prisoners.size(); i++) {	
+		float timeLeft = TimeDifference(g_prisoners[i].releaseDate, now).GetTimeDifference();
+		
+		if (timeLeft <= 0.5f) {
+			CBasePlayer@ prisoner = getPlayerByName(null, g_prisoners[i].steamid);
+			string name = prisoner !is null ? string(prisoner.pev.netname) : g_prisoners[i].lastKnownName;
+			
+			g_PlayerFuncs.SayTextAll(null, "\"" + name + "\" was released from ghost jail.\n");
+			g_prisoners[i].release();
+			g_prisoners.removeAt(i);
+			break;
+		} else if (g_prisoners[i].h_plr.IsValid()) {
+			CBasePlayer@ plr = cast<CBasePlayer@>(g_prisoners[i].h_plr.GetEntity());
+			if (plr.IsAlive()) {
+				g_PlayerFuncs.ClientPrintAll(HUD_PRINTNOTIFY, "Killing \"" + plr.pev.netname + "\". " + int(timeLeft / 60.0f) + " minutes of jail time left.\n");
+				g_EntityFuncs.Remove(plr);
+				g_Scheduler.SetTimeout("jail_observer", 0.1f, g_prisoners[i].h_plr, int(timeLeft));
+			}
+		}
+	}
+}
+
+void jail_observer(EHandle h_plr, int timeLeft) {
+	CBasePlayer@ plr = cast<CBasePlayer@>(h_plr.GetEntity());
+	
+	if (plr is null || !plr.IsConnected() || plr.GetObserver().IsObserver()) {
+		return;
+	}
+	
+	plr.GetObserver().StartObserver(plr.pev.origin, plr.pev.v_angle, false);
+	
+	g_Scheduler.SetTimeout("delay_respawn", 0.1f, EHandle(plr), timeLeft-1);
 }
 
 dictionary weapon_shoot_anims = {
@@ -583,7 +718,7 @@ void HudCustomSpriteMsg(edict_t@ targetPlr, HUDSpriteParams params, NetworkMessa
 }
 
 // find a player by name or partial name or steam id
-CBasePlayer@ getPlayerByName(CBasePlayer@ caller, string name)
+CBasePlayer@ getPlayerByName(CBasePlayer@ caller, string name, bool allowSelf=false)
 {
 	name = name.ToLowercase();
 	int partialMatches = 0;
@@ -592,7 +727,7 @@ CBasePlayer@ getPlayerByName(CBasePlayer@ caller, string name)
 	for (int i = 1; i <= g_Engine.maxClients; i++) {
 		CBasePlayer@ plr = g_PlayerFuncs.FindPlayerByIndex(i);
 		
-		if (plr is null or !plr.IsConnected() || plr.entindex() == caller.entindex()) {
+		if (plr is null or !plr.IsConnected() || (!allowSelf && caller !is null && plr.entindex() == caller.entindex())) {
 			continue;
 		}
 		
@@ -611,9 +746,11 @@ CBasePlayer@ getPlayerByName(CBasePlayer@ caller, string name)
 	if (partialMatches == 1) {
 		return partialMatch;
 	} else if (partialMatches > 1) {
-		g_PlayerFuncs.ClientPrint(caller, HUD_PRINTNOTIFY, 'There are ' + partialMatches + ' players that have "' + name + '" in their name. Be more specific.\n');
+		if (caller !is null)
+			g_PlayerFuncs.ClientPrint(caller, HUD_PRINTNOTIFY, 'There are ' + partialMatches + ' players that have "' + name + '" in their name. Be more specific.\n');
 	} else {
-		g_PlayerFuncs.ClientPrint(caller, HUD_PRINTNOTIFY, 'There is no player named "' + name + '".\n');
+		if (caller !is null)
+			g_PlayerFuncs.ClientPrint(caller, HUD_PRINTNOTIFY, 'There is no player named "' + name + '".\n');
 	}
 	
 	return null;
@@ -774,6 +911,18 @@ void viewPlayer(CBasePlayer@ viewer, CBasePlayer@ actor, bool updateOnly=false) 
 		view_loop(@g_viewents[viewer.entindex()]);
 }
 
+bool isPrisoner(CBasePlayer@ plr) {
+	string steamid = g_EngineFuncs.GetPlayerAuthId(plr.edict()).ToLowercase();
+	
+	for (uint i = 0; i < g_prisoners.size(); i++) {
+		if (steamid == g_prisoners[i].steamid) {
+			return true;
+		}
+	}
+	
+	return false;
+}
+
 bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 	bool isAdmin = g_PlayerFuncs.AdminLevel(plr) >= ADMIN_YES;
 	
@@ -788,12 +937,13 @@ bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 			}
 			
 			g_playerdat[plr.entindex()].lastObserverCommand = g_Engine.time;
-			
 			g_playerdat[plr.entindex()].wantsSpectate = !g_playerdat[plr.entindex()].wantsSpectate;
 			
 			if (plr.GetObserver() !is null && plr.GetObserver().IsObserver()) {
 				if (g_SurvivalMode.IsActive()) {
 					g_PlayerFuncs.SayText(plr, "Can't respawn while survival mode is on.\n");
+				} else if (isPrisoner(plr)) {
+					g_PlayerFuncs.SayText(plr, "Can't respawn while in jail.\n");
 				} else {
 					if (plr.m_flRespawnDelayTime != 0) {
 						g_PlayerFuncs.ClientPrintAll(HUD_PRINTNOTIFY, "" + plr.pev.netname + " stopped observing.\n");
@@ -814,14 +964,94 @@ bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 				}
 				
 				if (!g_SurvivalMode.IsActive()) {
-					g_Scheduler.SetTimeout("delay_respawn", 0.1f, EHandle(plr));
+					g_Scheduler.SetTimeout("delay_respawn", 0.1f, EHandle(plr), 0);
 					g_PlayerFuncs.ClientPrintAll(HUD_PRINTNOTIFY, "" + plr.pev.netname + " is observing.\n");
 				}
 			}
 
 			return true;
 		}
-		if (args[0] == ".views") {		
+		else if (args[0] == ".ghostjail") {
+			if (!isAdmin) {
+				g_PlayerFuncs.SayText(plr, "Admins only.\n");
+				return true;
+			}
+			
+			if (args.ArgC() < 3) {
+				g_PlayerFuncs.SayText(plr, "Usage: .ghostjail [name or Steam ID] [duration]\n");
+				g_PlayerFuncs.SayText(plr, "[duration] can be seconds (default), minutes, hours, or days (examples: 10, 30m, 24h, 1d)\n");
+				g_PlayerFuncs.SayText(plr, "You can update jail time by repeating the command with a different duration (0 = freedom)\n");
+				return true;
+			}
+			
+			
+			CBasePlayer@ target = getPlayerByName(plr, args[1], true);
+			
+			if (target is null) {
+				return true;
+			}
+			
+			string durStr = args[2].ToLowercase();
+			int duration = atoi(durStr);
+			int durationSeconds = duration;
+			string modifier = "s";
+			
+			if (int(durStr.Find("m")) != -1) {
+				modifier = "m";
+				durationSeconds = duration*60;
+			} else if (int(durStr.Find("h")) != -1) {
+				modifier = "h";
+				durationSeconds = duration*60*60;
+			} else if (int(durStr.Find("d")) != -1) {
+				modifier = "d";
+				durationSeconds = duration*60*60*24;
+			}
+			
+			if (durationSeconds / (60*60) > g_MaxJailTimeHours.GetInt()) {
+				g_PlayerFuncs.SayText(plr, "Jail time cannot exceed " + g_MaxJailTimeHours.GetInt() + " hours.\n");
+				return true;
+			}
+			
+			DateTime releaseDate = DateTime() + TimeDifference(durationSeconds);
+
+			string prisonerId = g_EngineFuncs.GetPlayerAuthId(target.edict()).ToLowercase();
+			Prisoner@ prisoner = null;
+			bool existingPrisoner = false;
+			
+			for (uint i = 0; i < g_prisoners.size(); i++) {
+				if (prisonerId == g_prisoners[i].steamid) {
+					@prisoner = g_prisoners[i];
+					existingPrisoner = true;
+					break;
+				}
+			}
+			
+			if (existingPrisoner) {
+				prisoner.releaseDate = releaseDate;
+				string msg = "\"" + plr.pev.netname + "\" set ghost jail time for \"" + string(target.pev.netname) + "\" to " + duration + modifier + ".\n";
+				g_PlayerFuncs.SayTextAll(plr, msg);
+				g_Game.AlertMessage(at_logged, "[JAIL] " + msg);
+				RelaySay(msg);
+			} 
+			else {
+				if (duration == 0) {
+					g_PlayerFuncs.SayText(plr, "Jail time must be at least 1s long.\n");
+					return true;
+				}
+				g_prisoners.insertLast(Prisoner(prisonerId, releaseDate, target.pev.netname));
+				@prisoner = @g_prisoners[g_prisoners.size()-1];
+				
+				g_EntityFuncs.Remove(target);
+				g_Scheduler.SetTimeout("jail_observer", 0.1f, EHandle(target), duration);
+				string msg = '"' + plr.pev.netname + '" sent "' + string(target.pev.netname) + "\" to ghost jail for " + duration + modifier + ".\n";
+				g_PlayerFuncs.SayTextAll(plr, msg);
+				g_Game.AlertMessage(at_logged, "[JAIL] " + msg);
+				RelaySay(msg);
+			}
+			
+			return true;
+		}
+		else if (args[0] == ".views") {		
 			if (g_playerdat[plr.entindex()].lastViewCommand + 0.2f > g_Engine.time) {
 				return true;
 			}
@@ -875,7 +1105,7 @@ bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 			
 			return true;
 		}
-		if (args[0] == ".viewhelp") {
+		else if (args[0] == ".viewhelp") {
 			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTTALK, 'Usage:\n');
 			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTTALK, '    ".view" to open the view menu.\n');
 			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTTALK, '    ".view [name/steamid]" to see another player\'s perspective.\n');
@@ -883,7 +1113,7 @@ bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTTALK, '    ".views" to see who is viewing (in console).\n');
 			return true;
 		}
-		if (args[0] == ".view" || args[0] == ".viewlast") {
+		else if (args[0] == ".view" || args[0] == ".viewlast") {
 			if (g_playerdat[plr.entindex()].lastViewCommand + 0.2f > g_Engine.time) {
 				return true;
 			}
@@ -930,6 +1160,7 @@ void clientCommand(CBaseEntity@ plr, string cmd) {
 HookReturnCode ClientSay( SayParameters@ pParams ) {
 	CBasePlayer@ plr = pParams.GetPlayer();
 	const CCommand@ args = pParams.GetArguments();
+	
 	if (args.ArgC() > 0 && doCommand(plr, args, false))
 	{
 		pParams.ShouldHide = true;
@@ -945,6 +1176,7 @@ CClientCommand _g4("view", "Spectate commands", @consoleCmd );
 CClientCommand _g5("viewlast", "Spectate commands", @consoleCmd );
 CClientCommand _g6("views", "Spectate commands", @consoleCmd );
 CClientCommand _g7("viewhelp", "Spectate commands", @consoleCmd );
+CClientCommand _g8("ghostjail", "Spectate commands", @consoleCmd );
 
 void consoleCmd( const CCommand@ args ) {
 	CBasePlayer@ plr = g_ConCommandSystem.GetCurrentPlayer();
