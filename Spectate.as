@@ -66,7 +66,7 @@ class Prisoner {
 		string muterId = g_EngineFuncs.GetPlayerAuthId(plr.edict()).ToLowercase();
 		CBasePlayer@ skipMute = getPlayerByName(null, steamid);
 		
-		if (!mutes.exists(muterId) && skipMute.entindex() != plr.entindex()) {
+		if (!mutes.exists(muterId) && (skipMute !is null and skipMute.entindex() != plr.entindex())) {
 			mutes[muterId] = true;
 			g_EngineFuncs.ServerCommand("as_command .mute_ext \"" + muterId + '" "' + steamid + '" ' + " 1\n");
 			g_EngineFuncs.ServerExecute();
@@ -83,7 +83,7 @@ class Prisoner {
 		g_EngineFuncs.ServerExecute();
 		
 		CBasePlayer@ reviveTarget = getPlayerByName(null, steamid);
-		if (!g_SurvivalMode.IsActive()) {
+		if (!g_SurvivalMode.IsActive() && reviveTarget !is null) {
 			reviveTarget.Revive();
 		}
 	}
@@ -339,6 +339,20 @@ void update_prisoner_handles() {
 	}
 }
 
+string formatTimeLeft(float seconds) {
+	if (seconds > 60*60*24*2) {
+		return "" + int((seconds / (60.0f*60.0f*24.0f)) + 0.5f) + "d";
+	}
+	else if (seconds > 60*60*2) {
+		return "" + int((seconds / (60.0f*60.0f)) + 0.5f) + "h";
+	}
+	else if (seconds > 60) {
+		return "" + int((seconds / 60.0f) + 0.5f) + "m";
+	}
+	
+	return "" + seconds + "s";
+}
+
 void jail_think() {
 	DateTime now = DateTime();
 	
@@ -349,14 +363,14 @@ void jail_think() {
 			CBasePlayer@ prisoner = getPlayerByName(null, g_prisoners[i].steamid);
 			string name = prisoner !is null ? string(prisoner.pev.netname) : g_prisoners[i].lastKnownName;
 			
-			g_PlayerFuncs.SayTextAll(null, "\"" + name + "\" was released from ghost jail.\n");
+			g_PlayerFuncs.ClientPrintAll(HUD_PRINTTALK, "\"" + name + "\" was released from ghost jail.\n");
 			g_prisoners[i].release();
 			g_prisoners.removeAt(i);
 			break;
 		} else if (g_prisoners[i].h_plr.IsValid()) {
 			CBasePlayer@ plr = cast<CBasePlayer@>(g_prisoners[i].h_plr.GetEntity());
 			if (plr.IsAlive()) {
-				g_PlayerFuncs.ClientPrintAll(HUD_PRINTNOTIFY, "Killing \"" + plr.pev.netname + "\". " + int(timeLeft / 60.0f) + " minutes of jail time left.\n");
+				g_PlayerFuncs.ClientPrintAll(HUD_PRINTNOTIFY, "Killing \"" + plr.pev.netname + "\". " + formatTimeLeft(timeLeft) + " of jail time left.\n");
 				g_EntityFuncs.Remove(plr);
 				g_Scheduler.SetTimeout("jail_observer", 0.1f, g_prisoners[i].h_plr, int(timeLeft));
 			}
@@ -972,6 +986,25 @@ bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 
 			return true;
 		}
+		else if (args[0] == ".listjails") {
+			
+			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTCONSOLE, "\nPlayers who are jailed\n----------------------------\n");
+			
+			DateTime now = DateTime();
+			
+			for (uint i = 0; i < g_prisoners.size(); i++) {				
+				float timeLeft = TimeDifference(g_prisoners[i].releaseDate, now).GetTimeDifference();
+				g_PlayerFuncs.ClientPrint(plr, HUD_PRINTCONSOLE, g_prisoners[i].lastKnownName + " (" + g_prisoners[i].steamid + ") - " + formatTimeLeft(timeLeft) + " left\n");
+			}
+			
+			if (g_prisoners.size() == 0) {
+				g_PlayerFuncs.ClientPrint(plr, HUD_PRINTCONSOLE, "(nobody)\n");
+			}
+			
+			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTCONSOLE, "----------------------------\n\n");
+			
+			return true;
+		}
 		else if (args[0] == ".ghostjail") {
 			if (!isAdmin) {
 				g_PlayerFuncs.SayText(plr, "Admins only.\n");
@@ -982,14 +1015,31 @@ bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 				g_PlayerFuncs.SayText(plr, "Usage: .ghostjail [name or Steam ID] [duration]\n");
 				g_PlayerFuncs.SayText(plr, "[duration] can be seconds (default), minutes, hours, or days (examples: 10, 30m, 24h, 1d)\n");
 				g_PlayerFuncs.SayText(plr, "You can update jail time by repeating the command with a different duration (0 = freedom)\n");
+				g_PlayerFuncs.SayText(plr, "Use a Steam ID to target players who are not currently on the server.\n");
 				return true;
 			}
 			
+			string lowerarg = args[1];
+			lowerarg = lowerarg.ToLowercase();
+			Prisoner@ prisoner = null;
+			bool isSteamIdTarget = lowerarg.Find("steam_0:") == 0;
 			
-			CBasePlayer@ target = getPlayerByName(plr, args[1], true);
+			// check for existing prisoners by steam id first
+			for (uint i = 0; i < g_prisoners.size(); i++) {
+				if (lowerarg == g_prisoners[i].steamid) {
+					@prisoner = g_prisoners[i];
+					break;
+				}
+			}
 			
-			if (target is null) {
-				return true;
+			// then check for players in the server
+			CBasePlayer@ target = null;
+			if (prisoner is null) {	
+				@target = getPlayerByName(plr, args[1], true);
+				
+				if (target is null && !isSteamIdTarget) {
+					return true;
+				}
 			}
 			
 			string durStr = args[2].ToLowercase();
@@ -1015,39 +1065,52 @@ bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 			
 			DateTime releaseDate = DateTime() + TimeDifference(durationSeconds);
 
-			string prisonerId = g_EngineFuncs.GetPlayerAuthId(target.edict()).ToLowercase();
-			Prisoner@ prisoner = null;
-			bool existingPrisoner = false;
-			
-			for (uint i = 0; i < g_prisoners.size(); i++) {
-				if (prisonerId == g_prisoners[i].steamid) {
-					@prisoner = g_prisoners[i];
-					existingPrisoner = true;
-					break;
+			if (prisoner is null && target !is null) {
+				// the player in the server that was targetted might already be a prisoner
+				string prisonerId = g_EngineFuncs.GetPlayerAuthId(target.edict()).ToLowercase();
+				
+				for (uint i = 0; i < g_prisoners.size(); i++) {
+					if (prisonerId == g_prisoners[i].steamid) {
+						@prisoner = g_prisoners[i];
+						break;
+					}
 				}
-			}
+			}	
 			
-			if (existingPrisoner) {
+			if (prisoner !is null) {
+				// update prisoner jail time
 				prisoner.releaseDate = releaseDate;
-				string msg = "\"" + plr.pev.netname + "\" set ghost jail time for \"" + string(target.pev.netname) + "\" to " + duration + modifier + ".\n";
+				
+				if (target !is null) {
+					prisoner.lastKnownName = target.pev.netname;
+				}
+				
+				string msg = "\"" + plr.pev.netname + "\" set ghost jail time for \"" + prisoner.lastKnownName + "\" to " + duration + modifier + ".\n";
 				g_PlayerFuncs.SayTextAll(plr, msg);
 				g_Game.AlertMessage(at_logged, "[JAIL] " + msg);
 				RelaySay(msg);
 			} 
 			else {
+				// new prisoner
 				if (duration == 0) {
 					g_PlayerFuncs.SayText(plr, "Jail time must be at least 1s long.\n");
 					return true;
 				}
-				g_prisoners.insertLast(Prisoner(prisonerId, releaseDate, target.pev.netname));
+				string prisonerId = target !is null ? g_EngineFuncs.GetPlayerAuthId(target.edict()).ToLowercase() : lowerarg;
+				string lastName = target !is null ? string(target.pev.netname) : lowerarg;
+				g_prisoners.insertLast(Prisoner(prisonerId, releaseDate, lastName));
 				@prisoner = @g_prisoners[g_prisoners.size()-1];
 				
-				g_EntityFuncs.Remove(target);
-				g_Scheduler.SetTimeout("jail_observer", 0.1f, EHandle(target), duration);
-				string msg = '"' + plr.pev.netname + '" sent "' + string(target.pev.netname) + "\" to ghost jail for " + duration + modifier + ".\n";
+				string msg = '"' + plr.pev.netname + '" sent "' + lastName + "\" to ghost jail for " + duration + modifier + ".\n";
 				g_PlayerFuncs.SayTextAll(plr, msg);
 				g_Game.AlertMessage(at_logged, "[JAIL] " + msg);
 				RelaySay(msg);
+				
+				if (target !is null) {
+					g_PlayerFuncs.SayText(target, "You are muted while in jail, but players can choose to unmute you.\n");
+					g_EntityFuncs.Remove(target);
+					g_Scheduler.SetTimeout("jail_observer", 0.1f, EHandle(target), duration);
+				}
 			}
 			
 			return true;
@@ -1181,6 +1244,7 @@ CClientCommand _g5("viewlast", "Spectate commands", @consoleCmd );
 CClientCommand _g6("views", "Spectate commands", @consoleCmd );
 CClientCommand _g7("viewhelp", "Spectate commands", @consoleCmd );
 CClientCommand _g8("ghostjail", "Spectate commands", @consoleCmd );
+CClientCommand _g9("listjails", "Spectate commands", @consoleCmd );
 
 void consoleCmd( const CCommand@ args ) {
 	CBasePlayer@ plr = g_ConCommandSystem.GetCurrentPlayer();
