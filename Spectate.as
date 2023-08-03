@@ -12,6 +12,31 @@ array<ViewDat> g_viewents;
 string screenlook_spr = "screenlook.spr";
 string eye_spr = "sprites/screenlook2.spr";
 
+dictionary g_player_states;
+
+class PlayerState {
+	bool blockViews = false;
+}
+
+// Will create a new state if the requested one does not exit
+PlayerState@ getPlayerState(CBasePlayer@ plr)
+{
+	if (plr is null or !plr.IsConnected())
+		return null;
+		
+	string steamId = g_EngineFuncs.GetPlayerAuthId( plr.edict() );
+	if (steamId == 'STEAM_ID_LAN' or steamId == 'BOT') {
+		steamId = plr.pev.netname;
+	}
+	
+	if ( !g_player_states.exists(steamId) )
+	{
+		PlayerState state;
+		g_player_states[steamId] = state;
+	}
+	return cast<PlayerState@>( g_player_states[steamId] );
+}
+
 CCVar@ g_MaxJailTimeHours;
 
 // Menus need to be defined globally when the plugin is loaded or else paging doesn't work.
@@ -826,10 +851,16 @@ void openViewMenu(EHandle h_plr, int pageNum) {
 	
 	for (uint i = 0; i < possibleTargets.size(); i++) {
 		CBasePlayer@ plr = possibleTargets[i];
+		PlayerState@ state = getPlayerState(plr);
 		
 		int itemPage = moreThanOnePage ? (i / 7) : 0;
 		bool isSelected = actor !is null and actor.entindex() == plr.entindex();
 		string color = isSelected ? "\\r" : "\\w";
+		
+		if (state.blockViews) {
+			color = "\\d";
+		}
+		
 		string steamid = g_EngineFuncs.GetPlayerAuthId(plr.edict());
 		g_menus[eidx].AddItem(color + plr.pev.netname + "\\y", any(steamid + "+" + itemPage));
 	}
@@ -839,6 +870,14 @@ void openViewMenu(EHandle h_plr, int pageNum) {
 }
 
 void viewPlayer(CBasePlayer@ viewer, CBasePlayer@ actor, bool updateOnly=false) {
+
+	PlayerState@ targetState = getPlayerState(actor);
+			
+	if (targetState.blockViews) {
+		g_PlayerFuncs.ClientPrint(viewer, HUD_PRINTTALK, "" + actor.pev.netname + " is blocking views.\n");
+		return;
+	}
+
 	g_viewents[viewer.entindex()].Remove();
 			
 	CBaseEntity@ viewent = g_EntityFuncs.CreateEntity("monster_ghost", {
@@ -1175,6 +1214,7 @@ bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTTALK, '    ".view [name/steamid]" to see another player\'s perspective.\n');
 			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTTALK, '    ".viewlast" to toggle between your view and the last selected view.\n');
 			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTTALK, '    ".views" to see who is viewing (in console).\n');
+			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTTALK, '    ".viewblock [0/1]" to prevent others viewing your screen.\n');
 			return true;
 		}
 		else if (args[0] == ".view" || args[0] == ".viewlast") {
@@ -1210,6 +1250,38 @@ bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 				
 			return true;
 		}
+		else if (args[0] == ".viewblock") {
+			if (g_playerdat[plr.entindex()].lastViewCommand + 0.2f > g_Engine.time) {
+				return true;
+			}
+			g_playerdat[plr.entindex()].lastViewCommand = g_Engine.time;
+		
+			PlayerState@ state = getPlayerState(plr);
+			
+			bool newState = !state.blockViews;
+			if (args.ArgC() > 1) {
+				newState = atoi(args[1]) != 0;
+			}
+			
+			state.blockViews = newState;
+			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTTALK, 'Views are now ' + (state.blockViews ? 'blocked' : 'allowed') + '.\n');
+		
+			if (newState) {
+				// kick current viewers
+				for (int i = 1; i <= g_Engine.maxClients; i++) {
+					CBasePlayer@ p = g_PlayerFuncs.FindPlayerByIndex(i);
+					
+					if (p is null or !p.IsConnected()) {
+						continue;
+					}
+					
+					if (g_viewents[i].targetidx == plr.entindex()) {
+						g_viewents[i].Remove();
+						g_PlayerFuncs.ClientPrint(p, HUD_PRINTTALK, "" + plr.pev.netname + " is blocking views.\n");
+					}
+				}
+			}
+		}
 	}
 	
 	return false;
@@ -1241,6 +1313,7 @@ CClientCommand _g2("observe", "Spectate commands", @consoleCmd );
 CClientCommand _g3("spectate", "Spectate commands", @consoleCmd );
 CClientCommand _g4("view", "Spectate commands", @consoleCmd );
 CClientCommand _g5("viewlast", "Spectate commands", @consoleCmd );
+CClientCommand _g10("viewblock", "Spectate commands", @consoleCmd );
 CClientCommand _g6("views", "Spectate commands", @consoleCmd );
 CClientCommand _g7("viewhelp", "Spectate commands", @consoleCmd );
 CClientCommand _g8("ghostjail", "Spectate commands", @consoleCmd );
