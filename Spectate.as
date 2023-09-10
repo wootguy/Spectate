@@ -880,7 +880,7 @@ void viewPlayer(CBasePlayer@ viewer, CBasePlayer@ actor, bool updateOnly=false) 
 
 	g_viewents[viewer.entindex()].Remove();
 			
-	CBaseEntity@ viewent = g_EntityFuncs.CreateEntity("monster_ghost", {
+	CBaseEntity@ viewent = g_EntityFuncs.CreateEntity("monster_ghost_plugin", {
 		{'origin', actor.pev.origin.ToString()},
 		{'angles', actor.pev.v_angle.ToString()},
 		{'model', "models/v_9mmhandgun.mdl"}
@@ -890,7 +890,7 @@ void viewPlayer(CBasePlayer@ viewer, CBasePlayer@ actor, bool updateOnly=false) 
 	viewent.pev.renderamt = 0;
 	viewent.pev.rendermode = 1;
 	
-	CBaseMonster@ wepent = cast<CBaseMonster@>(g_EntityFuncs.CreateEntity("monster_ghost", {
+	CBaseMonster@ wepent = cast<CBaseMonster@>(g_EntityFuncs.CreateEntity("monster_ghost_plugin", {
 		{'targetname', "as_view_wep_" + viewer.entindex()},
 		{'origin', actor.pev.origin.ToString()},
 		{'angles', actor.pev.v_angle.ToString()},
@@ -1281,6 +1281,8 @@ bool doCommand(CBasePlayer@ plr, const CCommand@ args, bool inConsole) {
 					}
 				}
 			}
+			
+			return true;
 		}
 	}
 	
