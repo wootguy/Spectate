@@ -6,6 +6,8 @@ Toggle observer mode with any of these commands (chat or console):
 `.observe`  
 `.spectate`  
 
+This plugin also adds a first-person spectate mode you can use while alive. Type `.viewhelp` for info.
+
 # Installation
 1. Download the script and save it to `scripts/plugins/Spectate.as`
 1. Download [this ghost entity script](https://raw.githubusercontent.com/wootguy/ghosts/master/scripts/GhostEntity.as) too and save it to `scripts/plugins/ghosts/GhostEntity.as` (required for first-person spectate mode)
